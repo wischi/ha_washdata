@@ -6841,18 +6841,34 @@ class ProfileStore:
         # Calculate scalar stats
         duration_std_dev = float(np.std(durations)) if durations else 0.0
 
-        # Usage stats (avg_energy, cycle_count) come from REAL cycles only, so imported
-        # reference cycles can shape the curve without ever inflating energy/count.
-        # When there are no reference cycles this is byte-identical to the prior behaviour
-        # (avg_energy from the avg curve, cycle_count = len(durations)).
-        if ref_cycles:
+        # Usage stats (avg_energy, cycle_count) come from REAL cycles when available.
+        # User-facing energy prioritizes hardware meter deltas (energy_meter_wh, issue #316)
+        # over power-trace integration via cycle_report_energy_wh.
+        # Computing the arithmetic mean across observed cycles avoids DTW smearing
+        # distortion where trapezoidal integration of an aligned/averaged power curve
+        # significantly inflates intermittent heating pulses.
+        if real_cycles:
             real_energies = [
-                float(c["energy_wh"])
+                cycle_report_energy_wh(c)
                 for c in real_cycles
-                if isinstance(c.get("energy_wh"), (int, float))
+                if c.get("energy_meter_wh") is not None or c.get("energy_wh") is not None
             ]
-            avg_energy = (sum(real_energies) / len(real_energies) / 1000.0) if real_energies else 0.0
+            if real_energies:
+                avg_energy = sum(real_energies) / len(real_energies) / 1000.0
+            else:
+                avg_energy = integrate_wh(time_grid, avg_curve) / 1000.0
             cycle_count = len(real_cycles)
+        elif ref_cycles:
+            ref_energies = [
+                cycle_report_energy_wh(c)
+                for c in ref_cycles
+                if c.get("energy_meter_wh") is not None or c.get("energy_wh") is not None
+            ]
+            if ref_energies:
+                avg_energy = sum(ref_energies) / len(ref_energies) / 1000.0
+            else:
+                avg_energy = integrate_wh(time_grid, avg_curve) / 1000.0
+            cycle_count = 0
         else:
             # Average-curve energy (kWh) via the shared trapezoidal integrator.
             # avg_curve is in Watts, time_grid in seconds; integrate_wh returns Wh.
